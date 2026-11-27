@@ -64,7 +64,15 @@ if [ -f "$METAFILE" ]; then
   [ -n "$_KEY_OVERRIDE" ] && MAYA_API_KEY="$_KEY_OVERRIDE"
 fi
 
-# API key: $MAYA_API_KEY, else the one start.sh used (metafile above), else MAYA_API_KEY in ./.env
+# API key: $MAYA_API_KEY, else the one start.sh used (metafile above, or this session's metafile for another
+# local port), else MAYA_API_KEY in ./.env
+if [ -z "${MAYA_API_KEY:-}" ]; then
+  for _meta in $(ls -t /tmp/colab-tunnel-"${SESSION}"-*.env 2>/dev/null || true); do
+    # shellcheck disable=SC1090
+    MAYA_API_KEY="$(. "$_meta" && printf '%s' "${MAYA_API_KEY:-}")" || MAYA_API_KEY=""
+    [ -n "$MAYA_API_KEY" ] && break
+  done
+fi
 if [ -z "${MAYA_API_KEY:-}" ]; then
   # shellcheck source=dotenv.sh
   . "${SCRIPT_DIR}/dotenv.sh"
@@ -117,9 +125,9 @@ MODELS_JSON=""
 KEY_REJECTED=0
 probe_models() {
   local resp http_code
-  local auth=()
-  [ -n "$MAYA_API_KEY" ] && auth=(-H "Authorization: Bearer ${MAYA_API_KEY}")
-  resp="$(curl -sS -m 2 "${auth[@]+"${auth[@]}"}" -w $'\n%{http_code}' "http://127.0.0.1:${LOCAL_PORT}/v1/models" 2>/dev/null || true)"
+  # header read from stdin so the key never shows up in process listings
+  resp="$(printf '%s\n' "${MAYA_API_KEY:+Authorization: Bearer ${MAYA_API_KEY}}" | \
+    curl -sS -m 2 -H @- -w $'\n%{http_code}' "http://127.0.0.1:${LOCAL_PORT}/v1/models" 2>/dev/null || true)"
   http_code="${resp##*$'\n'}"
   if [ "$http_code" = "200" ]; then
     MODELS_JSON="${resp%$'\n'*}"

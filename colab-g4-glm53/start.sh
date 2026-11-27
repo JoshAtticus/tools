@@ -559,7 +559,7 @@ while true; do
   fi
   if [ "$last_probe" -lt 0 ] || [ $((elapsed - last_probe)) -ge 2 ]; then
     last_probe=$elapsed
-    if curl -sf -H "Authorization: Bearer ${MAYA_API_KEY}" http://127.0.0.1:8090/v1/models >/dev/null 2>&1; then
+    if printf 'Authorization: Bearer %s\n' "$MAYA_API_KEY" | curl -sf -H @- http://127.0.0.1:8090/v1/models >/dev/null 2>&1; then
       ready=1
       break
     fi
