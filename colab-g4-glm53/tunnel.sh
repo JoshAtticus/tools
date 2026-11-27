@@ -67,9 +67,10 @@ fi
 # API key: $MAYA_API_KEY, else the one start.sh used (metafile above, or this session's metafile for another
 # local port), else MAYA_API_KEY in ./.env
 if [ -z "${MAYA_API_KEY:-}" ]; then
+  # parsed, not sourced, and only from files this user owns (/tmp is shared)
   for _meta in $(ls -t /tmp/colab-tunnel-"${SESSION}"-*.env 2>/dev/null || true); do
-    # shellcheck disable=SC1090
-    MAYA_API_KEY="$(. "$_meta" && printf '%s' "${MAYA_API_KEY:-}")" || MAYA_API_KEY=""
+    [ -f "$_meta" ] && [ -O "$_meta" ] || continue
+    MAYA_API_KEY="$(sed -n 's/^MAYA_API_KEY=\([A-Za-z0-9._~+/=-]*\)$/\1/p' "$_meta" | tail -n 1)"
     [ -n "$MAYA_API_KEY" ] && break
   done
 fi
