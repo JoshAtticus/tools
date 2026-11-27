@@ -55,12 +55,31 @@ if [ -f "$METAFILE" ]; then
   _TIER_OVERRIDE="${MODEL_TIER:-}"
   _CTX_OVERRIDE="${MODEL_CTX:-}"
   _NAME_OVERRIDE="${MODEL_NAME:-}"
+  _KEY_OVERRIDE="${MAYA_API_KEY:-}"
   # shellcheck disable=SC1090
   source "$METAFILE"
   [ -n "$_TIER_OVERRIDE" ] && MODEL_TIER="$_TIER_OVERRIDE"
   [ -n "$_CTX_OVERRIDE" ] && MODEL_CTX="$_CTX_OVERRIDE"
   [ -n "$_NAME_OVERRIDE" ] && MODEL_NAME="$_NAME_OVERRIDE"
+  [ -n "$_KEY_OVERRIDE" ] && MAYA_API_KEY="$_KEY_OVERRIDE"
 fi
+
+# API key: $MAYA_API_KEY, else the one start.sh used (metafile above, or this session's metafile for another
+# local port), else MAYA_API_KEY in ./.env
+if [ -z "${MAYA_API_KEY:-}" ]; then
+  # parsed, not sourced, and only from files this user owns (/tmp is shared)
+  for _meta in $(ls -t /tmp/colab-tunnel-"${SESSION}"-*.env 2>/dev/null || true); do
+    [ -f "$_meta" ] && [ -O "$_meta" ] || continue
+    MAYA_API_KEY="$(sed -n 's/^MAYA_API_KEY=\([A-Za-z0-9._~+/=-]*\)$/\1/p' "$_meta" | tail -n 1)"
+    [ -n "$MAYA_API_KEY" ] && break
+  done
+fi
+if [ -z "${MAYA_API_KEY:-}" ]; then
+  # shellcheck source=dotenv.sh
+  . "${SCRIPT_DIR}/dotenv.sh"
+  MAYA_API_KEY="$(read_dotenv_key)"
+fi
+export MAYA_API_KEY
 
 if ! command -v "$COLAB_BIN" >/dev/null 2>&1 && [ ! -x "$COLAB_BIN" ]; then
   echo "[tunnel] Error: colab CLI not found at '$COLAB_BIN'." >&2
@@ -104,12 +123,21 @@ if [ ! -f "$KEY" ]; then
 fi
 
 MODELS_JSON=""
+KEY_REJECTED=0
 probe_models() {
   local resp http_code
-  resp="$(curl -sS -m 2 -w $'\n%{http_code}' "http://127.0.0.1:${LOCAL_PORT}/v1/models" 2>/dev/null || true)"
+  # header read from stdin so the key never shows up in process listings
+  resp="$(printf '%s\n' "${MAYA_API_KEY:+Authorization: Bearer ${MAYA_API_KEY}}" | \
+    curl -sS -m 2 -H @- -w $'\n%{http_code}' "http://127.0.0.1:${LOCAL_PORT}/v1/models" 2>/dev/null || true)"
   http_code="${resp##*$'\n'}"
   if [ "$http_code" = "200" ]; then
     MODELS_JSON="${resp%$'\n'*}"
+    KEY_REJECTED=0
+    return 0
+  fi
+  # 401: the tunnel is up but the server wants a key we don't have (or a different one)
+  if [ "$http_code" = "401" ]; then
+    KEY_REJECTED=1
     return 0
   fi
   return 1
@@ -201,7 +229,8 @@ format_ctx() {
 
 print_ready_summary() {
   local tunnel_mode_desc="$1"
-  local model_name tier_display ctx_display stop_cmd
+  local model_name tier_display ctx_display stop_cmd api_key
+  api_key="${MAYA_API_KEY:-<your API key>}"
 
   model_name="$(detect_model_name)"
   tier_display="${MODEL_TIER:-}"
@@ -239,21 +268,26 @@ print_ready_summary() {
   printf '  %s%-19s%s %shttp://127.0.0.1:%s/v1%s\n' "$C_DIM" "OpenAI Base URL" "$C_RESET" "$C_CYAN" "$LOCAL_PORT" "$C_RESET"
   printf '  %s%-19s%s %shttp://127.0.0.1:%s%s\n' "$C_DIM" "Anthropic Base URL" "$C_RESET" "$C_CYAN" "$LOCAL_PORT" "$C_RESET"
   printf '  %s%-19s%s %shttp://127.0.0.1:%s/%s\n' "$C_DIM" "Web UI" "$C_RESET" "$C_CYAN" "$LOCAL_PORT" "$C_RESET"
-  printf '  %s%-19s%s %s\n' "$C_DIM" "API Key" "$C_RESET" "sk-local (any non-empty string)"
+  if [ "$KEY_REJECTED" -eq 1 ]; then
+    printf '  %s%-19s%s %s%s%s\n' "$C_DIM" "API Key" "$C_RESET" "$C_YELLOW" \
+      "401 from server: set MAYA_API_KEY (env or .env) to the key start.sh used" "$C_RESET"
+  else
+    printf '  %s%-19s%s %s%s%s\n' "$C_DIM" "API Key" "$C_RESET" "$C_BOLD" "$api_key" "$C_RESET"
+  fi
   printf '\n'
   printf '  %sOpenAI env%s\n' "$C_BOLD" "$C_RESET"
   printf '    %sexport OPENAI_BASE_URL="http://127.0.0.1:%s/v1"%s\n' "$C_CYAN" "$LOCAL_PORT" "$C_RESET"
-  printf '    %sexport OPENAI_API_KEY="sk-local"%s\n' "$C_CYAN" "$C_RESET"
+  printf '    %sexport OPENAI_API_KEY="%s"%s\n' "$C_CYAN" "$api_key" "$C_RESET"
   printf '    %sexport OPENAI_MODEL="%s"%s\n' "$C_CYAN" "$model_name" "$C_RESET"
   printf '\n'
   printf '  %sClaude Code%s\n' "$C_BOLD" "$C_RESET"
   printf '    %sANTHROPIC_BASE_URL="http://127.0.0.1:%s" \\%s\n' "$C_CYAN" "$LOCAL_PORT" "$C_RESET"
-  printf '    %sANTHROPIC_AUTH_TOKEN="sk-local" \\%s\n' "$C_CYAN" "$C_RESET"
+  printf '    %sANTHROPIC_AUTH_TOKEN="%s" \\%s\n' "$C_CYAN" "$api_key" "$C_RESET"
   printf '    %sANTHROPIC_MODEL="%s" \\%s\n' "$C_CYAN" "$model_name" "$C_RESET"
   printf '    %sclaude%s\n' "$C_CYAN" "$C_RESET"
   printf '\n'
   printf '  %sQuick curl check%s\n' "$C_BOLD" "$C_RESET"
-  printf '    %scurl -s http://127.0.0.1:%s/v1/models | head -c 200; echo%s\n' "$C_DIM" "$LOCAL_PORT" "$C_RESET"
+  printf '    %scurl -s -H "Authorization: Bearer %s" http://127.0.0.1:%s/v1/models | head -c 200; echo%s\n' "$C_DIM" "$api_key" "$LOCAL_PORT" "$C_RESET"
   printf '\n'
   printf '  %sStop & end Colab billing when done%s\n' "$C_BOLD" "$C_RESET"
   printf '    %s%s%s\n' "$C_YELLOW$C_BOLD" "$stop_cmd" "$C_RESET"

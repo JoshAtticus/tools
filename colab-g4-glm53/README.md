@@ -116,14 +116,24 @@ Once `tunnel.sh` reports `200 OK` on `http://127.0.0.1:18100/v1/models`:
 - **OpenAI Base URL:** `http://127.0.0.1:18100/v1`
 - **Anthropic Base URL:** `http://127.0.0.1:18100` (`/v1/messages` with `thinking` and tool calls)
 - **Web UI + Maya monitor:** `http://127.0.0.1:18100/`
-- **API Key:** any non-empty string, e.g. `sk-local`
+- **API Key:** printed by `start.sh` / `tunnel.sh` (see [API key](#api-key)); send it as `Authorization: Bearer <key>` or `x-api-key`
 - **Model Name:** `glm-5.3-flash-uncensored-2.51bpw` (or `3.05bpw` / `4.05bpw`; Maya accepts any model string)
+
+### API key
+
+The Maya server rejects requests without the right key (`401`). `start.sh` picks it in this order:
+
+1. `MAYA_API_KEY` from your environment.
+2. `MAYA_API_KEY=...` in `colab-g4-glm53/.env` (copy [`.env.example`](.env.example); `.env` is git-ignored).
+3. Otherwise a fresh random `sk-...` key on every `./start.sh` run.
+
+The key is printed in the READY summary and saved (mode `600`) to `/tmp/colab-tunnel-<session>-<port>.env`, so `./tunnel.sh` reconnects with the same one. For the Web UI, paste it into the API key field in its settings.
 
 ### OpenAI SDK / OpenCode / Codex / OMP
 
 ```bash
 export OPENAI_BASE_URL="http://127.0.0.1:18100/v1"
-export OPENAI_API_KEY="sk-local"
+export OPENAI_API_KEY="<your API key>"
 export OPENAI_MODEL="glm-5.3-flash-uncensored-2.51bpw"
 ```
 
@@ -131,7 +141,7 @@ export OPENAI_MODEL="glm-5.3-flash-uncensored-2.51bpw"
 
 ```bash
 ANTHROPIC_BASE_URL="http://127.0.0.1:18100" \
-ANTHROPIC_AUTH_TOKEN="sk-local" \
+ANTHROPIC_AUTH_TOKEN="<your API key>" \
 ANTHROPIC_MODEL="glm-5.3-flash-uncensored-2.51bpw" \
 claude
 ```

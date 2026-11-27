@@ -56,6 +56,24 @@ if ! command -v "$COLAB_BIN" >/dev/null 2>&1 && [ ! -x "$COLAB_BIN" ]; then
   exit 1
 fi
 
+# API key the Maya server requires: $MAYA_API_KEY, else MAYA_API_KEY in ./.env, else a fresh random one
+# shellcheck source=dotenv.sh
+. "${SCRIPT_DIR}/dotenv.sh"
+API_KEY_SOURCE="\$MAYA_API_KEY"
+if [ -z "${MAYA_API_KEY:-}" ]; then
+  MAYA_API_KEY="$(read_dotenv_key)"
+  API_KEY_SOURCE=".env"
+fi
+if [ -z "$MAYA_API_KEY" ]; then
+  MAYA_API_KEY="sk-$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+  API_KEY_SOURCE="randomly generated"
+fi
+if printf '%s' "$MAYA_API_KEY" | LC_ALL=C grep -q '[^A-Za-z0-9._~+/=-]'; then
+  echo "[start] Error: MAYA_API_KEY may only contain A-Z a-z 0-9 . _ ~ + / = -" >&2
+  exit 1
+fi
+export MAYA_API_KEY
+
 case "$TIER" in
   2.51)
     HF_REPO="MikeRoz/GLM-5.3-Flash-Uncensored-2.51bpw-h6-exl3"
@@ -118,6 +136,7 @@ printf '  %s%-12s%s %s\n' "$C_DIM" "GPU" "$C_RESET" "Colab G4 (RTX PRO 6000 Blac
 printf '  %s%-12s%s %s%s bpw%s\n' "$C_DIM" "Quant" "$C_RESET" "$C_CYAN" "$TIER" "$C_RESET"
 printf '  %s%-12s%s %s\n' "$C_DIM" "Context" "$C_RESET" "$CTX"
 printf '  %s%-12s%s %s\n' "$C_DIM" "Local Port" "$C_RESET" "$LOCAL_PORT"
+printf '  %s%-12s%s %s\n' "$C_DIM" "API Key" "$C_RESET" "$API_KEY_SOURCE"
 
 sleep_with_countdown() {
   local secs="$1"
@@ -236,7 +255,8 @@ fi
 REMOTE_SCRIPT_FILE="$(mktemp)"
 trap 'rm -f "$REMOTE_SCRIPT_FILE"' EXIT
 
-cat > "$REMOTE_SCRIPT_FILE" <<'REMOTE_EOF'
+printf 'export MAYA_API_KEY=%q\n' "$MAYA_API_KEY" > "$REMOTE_SCRIPT_FILE"
+cat >> "$REMOTE_SCRIPT_FILE" <<'REMOTE_EOF'
 set -euo pipefail
 HF_REPO="$1"
 MODEL_DIR="$2"
@@ -457,7 +477,7 @@ fi
 
 step_header 5 "Writing Maya server config"
 python3 - "$MODEL_DIR" "$CTX" "$SPEC_MIN_P" "$TIER" <<'PY'
-import sys, json
+import os, sys, json
 model_dir, ctx, spec_p, tier = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
 pack = f"/content/models/{model_dir}/pack"
 
@@ -484,6 +504,7 @@ cfg = {
     "host": "127.0.0.1",
     "port": 8090,
     "max_context": ctx,
+    "api_key": os.environ["MAYA_API_KEY"],
     "args": args,
     "env": {
         "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
@@ -502,7 +523,7 @@ if [ "$CTX" -le 131072 ]; then
 else
   KV_DESC="int8 (kv_resident=20480)"
 fi
-step_ok "Config ready: ${KV_DESC}, DFlash2, spec_min_p=${SPEC_MIN_P}, CPU_LANE=18, DSA_GRAPHS=1"
+step_ok "Config ready: ${KV_DESC}, API key required, DFlash2, spec_min_p=${SPEC_MIN_P}, CPU_LANE=18, DSA_GRAPHS=1"
 
 step_header 6 "Loading GLM-5.3-Flash (${TIER} bpw) into 96 GB VRAM"
 pkill -f "serve/server.py" 2>/dev/null || true
@@ -538,7 +559,7 @@ while true; do
   fi
   if [ "$last_probe" -lt 0 ] || [ $((elapsed - last_probe)) -ge 2 ]; then
     last_probe=$elapsed
-    if curl -sf http://127.0.0.1:8090/v1/models >/dev/null 2>&1; then
+    if printf 'Authorization: Bearer %s\n' "$MAYA_API_KEY" | curl -sf -H @- http://127.0.0.1:8090/v1/models >/dev/null 2>&1; then
       ready=1
       break
     fi
@@ -625,11 +646,16 @@ run_remote_provision
 rm -f "$REMOTE_SCRIPT_FILE"
 
 METAFILE="/tmp/colab-tunnel-${SESSION}-${LOCAL_PORT}.env"
-cat > "$METAFILE" <<EOF
+rm -f "$METAFILE"
+(
+  umask 077
+  cat > "$METAFILE" <<EOF
 MODEL_TIER="${TIER}"
 MODEL_CTX="${CTX}"
 MODEL_NAME="${MODEL_NAME}"
 EOF
+  printf 'MAYA_API_KEY=%q\n' "$MAYA_API_KEY" >> "$METAFILE"
+)
 
 export MODEL_TIER="$TIER"
 export MODEL_CTX="$CTX"
