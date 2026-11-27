@@ -68,12 +68,10 @@ if [ -z "$MAYA_API_KEY" ]; then
   MAYA_API_KEY="sk-$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
   API_KEY_SOURCE="randomly generated"
 fi
-case "$MAYA_API_KEY" in
-  *,*|*[[:space:]]*)
-    echo "[start] Error: MAYA_API_KEY must not contain commas or whitespace." >&2
-    exit 1
-    ;;
-esac
+if printf '%s' "$MAYA_API_KEY" | LC_ALL=C grep -q '[^A-Za-z0-9._~+/=-]'; then
+  echo "[start] Error: MAYA_API_KEY may only contain A-Z a-z 0-9 . _ ~ + / = -" >&2
+  exit 1
+fi
 export MAYA_API_KEY
 
 case "$TIER" in
